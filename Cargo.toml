@@ -7,3 +7,5 @@ edition = "2021"
 
 [dependencies]
 eframe = "0.25"
+gcal = "0.1.6"
+tokio = { version = "1.35", features = ["rt-multi-thread", "time"] }
