@@ -55,8 +55,8 @@ impl Month {
             Month::November => 11,
             Month::December => 12,
         };
-        let date = chrono::NaiveDate::from_ymd_opt(year, month_num, 1)
-            .unwrap_or(chrono::NaiveDate::from_ymd(year + 1, 1, 1))
+        let date = chrono::NaiveDate::from_ymd_opt(year, month_num + 1, 1)
+            .unwrap_or(chrono::NaiveDate::from_ymd(year - 1, 1, 1))
             .pred();
         date.format("%d").to_string()
     }
@@ -148,48 +148,75 @@ impl eframe::App for MainScreen {
                         });
 
                     if let Some(month) = self.month.clone() {
-                        if !self.waiting_for_events && !self.loaded_events {
-                            self.calendar_api
-                                .dispatch_events_request(self.auth_key.clone(), month);
-                            self.waiting_for_events = true;
+                        if ui.button("Get Events").clicked() {
+                            if !self.waiting_for_events {
+                                self.calendar_api
+                                    .dispatch_events_request(self.auth_key.clone(), month);
+                                self.loaded_events = false;
+                                self.waiting_for_events = true;
+                            }
                         }
+                        if self.loaded_events {
+                            if ui.button("Generate CSV").clicked() {}
+                        }
+                    }
+                    if self.waiting_for_events {
+                        ui.label("Loading...");
+                        ui.add(egui::widgets::Spinner::new());
                     }
                 }
             });
             ui.add_space(4.0);
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            if !self.auth_key.is_empty() {
-                ui.label("Select a calendar and month to get started");
-            }
-            if self.loaded_events {
-                self.events.iter().for_each(|event| {
-                    println!("Event: {:?}", event);
-                    ui.label(event.summary.clone().unwrap_or("".to_owned()));
-                    ui.label(event.description.clone().unwrap_or("".to_owned()));
-                    ui.label(
-                        event
-                            .start
-                            .clone()
-                            .map(|st| st.date_time)
-                            .flatten()
-                            .map(|dt| dt.to_string())
-                            .unwrap_or("".to_owned()),
-                    );
-                    ui.label(
-                        event
-                            .end
-                            .clone()
-                            .map(|st| st.date_time)
-                            .flatten()
-                            .map(|dt| dt.to_string())
-                            .unwrap_or("".to_owned()),
-                    );
-                    ui.label(event.color_id.clone().unwrap_or("".to_owned()));
+            egui::ScrollArea::both().show(ui, |ui| {
+                if !self.auth_key.is_empty() && self.month.is_none() {
+                    ui.label("Select a calendar and month to get started");
+                }
+                if self.loaded_events {
+                    egui::Grid::new("events")
+                        .num_columns(5)
+                        .striped(true)
+                        .spacing([4.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label("Summary");
+                            ui.label("Description");
+                            ui.label("Start");
+                            ui.label("End");
+                            ui.label("Color");
+                            ui.end_row();
+                            self.events
+                                .iter()
+                                .filter(|e| e.color_id.is_some())
+                                .for_each(|event| {
+                                    println!("Event: {:?}", event);
+                                    ui.label(event.summary.clone().unwrap_or("".to_owned()));
+                                    ui.label(event.description.clone().unwrap_or("".to_owned()));
+                                    ui.label(
+                                        event
+                                            .start
+                                            .clone()
+                                            .map(|st| st.date_time)
+                                            .flatten()
+                                            .map(|dt| dt.to_string())
+                                            .unwrap_or("".to_owned()),
+                                    );
+                                    ui.label(
+                                        event
+                                            .end
+                                            .clone()
+                                            .map(|st| st.date_time)
+                                            .flatten()
+                                            .map(|dt| dt.to_string())
+                                            .unwrap_or("".to_owned()),
+                                    );
+                                    ui.label(event.color_id.clone().unwrap_or("".to_owned()));
 
-                    ui.separator();
-                })
-            }
+                                    ui.end_row();
+                                });
+                        });
+                }
+            });
         });
     }
 }
@@ -199,10 +226,6 @@ impl MainScreen {
         let (sender, receiver) = std::sync::mpsc::channel::<APIMessage>();
         let calendar_api = CalendarAPI { sender };
         let async_api = calendar_api.clone();
-        let start = CalendarAPI::start_date(&Month::March);
-        let end = CalendarAPI::end_date(&Month::March);
-        println!("S: {}, E: {}", start, end);
-
         let rt = Runtime::new().unwrap();
         std::thread::spawn(move || {
             rt.block_on(async {
