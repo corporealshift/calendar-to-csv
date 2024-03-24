@@ -1,5 +1,6 @@
-use chrono::DateTime;
+use chrono::{DateTime, FixedOffset};
 use eframe::egui;
+use eframe::emath::Numeric;
 use gcal::*;
 use std::fs::File;
 use std::sync::mpsc::{Receiver, Sender};
@@ -87,30 +88,40 @@ fn main() -> Result<(), eframe::Error> {
 struct CSVEvent {
     summary: String,
     description: String,
-    start: String,
-    end: String,
+    date: String,
+    hours: String,
     color: String,
+}
+fn parse_date_string(date_string: Option<EventCalendarDate>) -> Option<DateTime<FixedOffset>> {
+    date_string
+        .map(|st| st.date_time)
+        .flatten()
+        .map(|dt| DateTime::parse_from_rfc3339(dt.as_str()).ok())
+        .flatten()
 }
 
 impl CSVEvent {
     fn from_event(event: &Event) -> CSVEvent {
+        let end = parse_date_string(event.end.clone());
+        let start = parse_date_string(event.start.clone());
+        let diff = end.zip(start).map(|(end, start)| end - start);
+
+        let diff_hours = diff.map(|diff| diff.num_hours());
+        let diff_hour_fraction: Option<f64> = diff.map(|diff| diff.num_minutes().to_f64() / 60.0);
+        let diff = diff_hours
+            .zip(diff_hour_fraction)
+            .map(|(dh, dm)| dh.to_f64() + dm);
         CSVEvent {
             summary: event.summary.clone().unwrap_or("".to_owned()),
             description: event.description.clone().unwrap_or("".to_owned()),
-            start: event
+            date: event
                 .start
                 .clone()
-                .map(|st| st.date_time)
+                .map(|st| st.date)
                 .flatten()
                 .map(|dt| dt.to_string())
                 .unwrap_or("".to_owned()),
-            end: event
-                .end
-                .clone()
-                .map(|e| e.date_time)
-                .flatten()
-                .map(|dt| dt.to_string())
-                .unwrap_or("".to_owned()),
+            hours: diff.unwrap_or(0.0).to_string(),
             color: event.color_id.clone().unwrap_or("".to_owned()),
         }
     }
@@ -221,8 +232,8 @@ impl eframe::App for MainScreen {
                                         let headers = wtr.write_record(&[
                                             "Summary",
                                             "Description",
-                                            "Start",
-                                            "End",
+                                            "Date",
+                                            "Num Hours",
                                             "Color",
                                         ]);
                                         if let Ok(_) = headers {
@@ -230,8 +241,8 @@ impl eframe::App for MainScreen {
                                                 match wtr.serialize((
                                                     &event.summary,
                                                     &event.description,
-                                                    &event.start,
-                                                    &event.end,
+                                                    &event.date,
+                                                    &event.hours,
                                                     &event.color,
                                                 )) {
                                                     Ok(_) => {}
@@ -270,15 +281,15 @@ impl eframe::App for MainScreen {
                         .show(ui, |ui| {
                             ui.label("Summary");
                             ui.label("Description");
-                            ui.label("Start");
-                            ui.label("End");
+                            ui.label("Date");
+                            ui.label("Hours");
                             ui.label("Color");
                             ui.end_row();
                             self.events.iter().for_each(|event| {
                                 ui.label(&event.summary);
                                 ui.label(&event.description);
-                                ui.label(&event.start);
-                                ui.label(&event.end);
+                                ui.label(&event.date);
+                                ui.label(&event.hours);
                                 ui.label(&event.color);
 
                                 ui.end_row();
@@ -310,7 +321,7 @@ impl MainScreen {
             events: vec![],
             loaded_events: false,
             month: None,
-            year: "".to_owned(),
+            year: "2024".to_owned(),
         }
     }
 }
