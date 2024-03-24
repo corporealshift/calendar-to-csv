@@ -1,9 +1,11 @@
 use chrono::DateTime;
 use eframe::egui;
 use gcal::*;
+use std::fs::File;
 use std::sync::mpsc::{Receiver, Sender};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+
 #[derive(Debug, PartialEq, Clone)]
 enum Month {
     January,
@@ -55,10 +57,17 @@ impl Month {
             Month::November => 11,
             Month::December => 12,
         };
-        let date = chrono::NaiveDate::from_ymd_opt(year, month_num + 1, 1)
-            .unwrap_or(chrono::NaiveDate::from_ymd(year - 1, 1, 1))
-            .pred();
-        date.format("%d").to_string()
+        let date_opt = chrono::NaiveDate::from_ymd_opt(year, month_num + 1, 1)
+            .unwrap_or(
+                chrono::NaiveDate::from_ymd_opt(year - 1, 1, 1)
+                    .unwrap_or(chrono::NaiveDate::default()),
+            )
+            .pred_opt();
+        if let Some(date) = date_opt {
+            date.format("%d").to_string()
+        } else {
+            "28".to_owned()
+        }
     }
 }
 
@@ -74,14 +83,48 @@ fn main() -> Result<(), eframe::Error> {
     )
 }
 
+#[derive(Debug)]
+struct CSVEvent {
+    summary: String,
+    description: String,
+    start: String,
+    end: String,
+    color: String,
+}
+
+impl CSVEvent {
+    fn from_event(event: &Event) -> CSVEvent {
+        CSVEvent {
+            summary: event.summary.clone().unwrap_or("".to_owned()),
+            description: event.description.clone().unwrap_or("".to_owned()),
+            start: event
+                .start
+                .clone()
+                .map(|st| st.date_time)
+                .flatten()
+                .map(|dt| dt.to_string())
+                .unwrap_or("".to_owned()),
+            end: event
+                .end
+                .clone()
+                .map(|e| e.date_time)
+                .flatten()
+                .map(|dt| dt.to_string())
+                .unwrap_or("".to_owned()),
+            color: event.color_id.clone().unwrap_or("".to_owned()),
+        }
+    }
+}
+
 struct MainScreen {
     receiver: Receiver<APIMessage>,
     calendar_api: CalendarAPI,
     oauth_url: String,
     auth_key: String,
     waiting_for_events: bool,
-    events: Vec<Event>,
+    events: Vec<CSVEvent>,
     loaded_events: bool,
+    year: String,
     month: Option<Month>,
 }
 
@@ -92,7 +135,11 @@ impl eframe::App for MainScreen {
                 APIMessage::OauthURL(url) => self.oauth_url = url,
                 APIMessage::AuthToken(token) => self.auth_key = token,
                 APIMessage::Events(events) => {
-                    self.events = events;
+                    self.events = events
+                        .iter()
+                        .filter(|e| e.color_id.is_some())
+                        .map(|e| CSVEvent::from_event(e))
+                        .collect();
                     self.loaded_events = true;
                     self.waiting_for_events = false;
                 }
@@ -120,6 +167,7 @@ impl eframe::App for MainScreen {
                     ui.hyperlink(self.oauth_url.clone());
                 }
                 if !self.auth_key.is_empty() {
+                    ui.add(egui::TextEdit::singleline(&mut self.year).desired_width(100.0));
                     egui::ComboBox::from_label("Select Month")
                         .selected_text(
                             self.month
@@ -148,16 +196,57 @@ impl eframe::App for MainScreen {
                         });
 
                     if let Some(month) = self.month.clone() {
-                        if ui.button("Get Events").clicked() {
-                            if !self.waiting_for_events {
-                                self.calendar_api
-                                    .dispatch_events_request(self.auth_key.clone(), month);
-                                self.loaded_events = false;
-                                self.waiting_for_events = true;
+                        if !self.year.is_empty() {
+                            if ui.button("Get Events").clicked() {
+                                if !self.waiting_for_events {
+                                    self.calendar_api.dispatch_events_request(
+                                        self.auth_key.clone(),
+                                        self.year.clone(),
+                                        month,
+                                    );
+                                    self.loaded_events = false;
+                                    self.waiting_for_events = true;
+                                }
                             }
-                        }
-                        if self.loaded_events {
-                            if ui.button("Generate CSV").clicked() {}
+                            if self.loaded_events {
+                                if ui.button("Generate CSV").clicked() {
+                                    let month_str =
+                                        self.month.clone().unwrap_or(Month::January).to_str();
+                                    let maybe_file = File::create_new(format!(
+                                        "{}-{}-invoice.csv",
+                                        &self.year, month_str
+                                    ));
+                                    if let Ok(file) = maybe_file {
+                                        let mut wtr = csv::Writer::from_writer(file);
+                                        let headers = wtr.write_record(&[
+                                            "Summary",
+                                            "Description",
+                                            "Start",
+                                            "End",
+                                            "Color",
+                                        ]);
+                                        if let Ok(_) = headers {
+                                            self.events.iter().for_each(|event| {
+                                                match wtr.serialize((
+                                                    &event.summary,
+                                                    &event.description,
+                                                    &event.start,
+                                                    &event.end,
+                                                    &event.color,
+                                                )) {
+                                                    Ok(_) => {}
+                                                    Err(e) => {
+                                                        ui.label(format!(
+                                                    "An error occurred serializing an event: {}",
+                                                    e
+                                                ));
+                                                    }
+                                                }
+                                            })
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     if self.waiting_for_events {
@@ -185,35 +274,15 @@ impl eframe::App for MainScreen {
                             ui.label("End");
                             ui.label("Color");
                             ui.end_row();
-                            self.events
-                                .iter()
-                                .filter(|e| e.color_id.is_some())
-                                .for_each(|event| {
-                                    println!("Event: {:?}", event);
-                                    ui.label(event.summary.clone().unwrap_or("".to_owned()));
-                                    ui.label(event.description.clone().unwrap_or("".to_owned()));
-                                    ui.label(
-                                        event
-                                            .start
-                                            .clone()
-                                            .map(|st| st.date_time)
-                                            .flatten()
-                                            .map(|dt| dt.to_string())
-                                            .unwrap_or("".to_owned()),
-                                    );
-                                    ui.label(
-                                        event
-                                            .end
-                                            .clone()
-                                            .map(|st| st.date_time)
-                                            .flatten()
-                                            .map(|dt| dt.to_string())
-                                            .unwrap_or("".to_owned()),
-                                    );
-                                    ui.label(event.color_id.clone().unwrap_or("".to_owned()));
+                            self.events.iter().for_each(|event| {
+                                ui.label(&event.summary);
+                                ui.label(&event.description);
+                                ui.label(&event.start);
+                                ui.label(&event.end);
+                                ui.label(&event.color);
 
-                                    ui.end_row();
-                                });
+                                ui.end_row();
+                            });
                         });
                 }
             });
@@ -222,7 +291,7 @@ impl eframe::App for MainScreen {
 }
 
 impl MainScreen {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel::<APIMessage>();
         let calendar_api = CalendarAPI { sender };
         let async_api = calendar_api.clone();
@@ -241,6 +310,7 @@ impl MainScreen {
             events: vec![],
             loaded_events: false,
             month: None,
+            year: "".to_owned(),
         }
     }
 }
@@ -272,14 +342,18 @@ impl CalendarAPI {
             params.redirect_url = Some(format!("http://{}", host));
 
             let oauth_url = oauth_user_url(params.clone());
-            self.sender.send(APIMessage::OauthURL(oauth_url));
+            if let Err(e) = self.sender.send(APIMessage::OauthURL(oauth_url)) {
+                println!("An error occurred sending oauth url: {}", e);
+            }
         }
         loop {
             let lock = state.lock().await;
             if lock.access_key.is_some() {
                 let access_key = lock.access_key.clone().unwrap();
                 println!("Key received!");
-                self.sender.send(APIMessage::AuthToken(access_key));
+                if let Err(e) = self.sender.send(APIMessage::AuthToken(access_key)) {
+                    println!("An error occurred sending the access_key: {}", e);
+                }
                 break;
             }
             println!("Waiting for auth token...");
@@ -287,17 +361,17 @@ impl CalendarAPI {
         }
     }
 
-    fn dispatch_events_request(&self, access_key: String, month: Month) {
+    fn dispatch_events_request(&self, access_key: String, year: String, month: Month) {
         let rt = Runtime::new().unwrap();
         let client = self.clone();
         std::thread::spawn(move || {
             rt.block_on(async {
-                client.get_events(access_key, month).await;
+                client.get_events(access_key, year, month).await;
             });
         });
     }
 
-    async fn get_events(&self, access_key: String, month: Month) {
+    async fn get_events(&self, access_key: String, year: String, month: Month) {
         let client = Client::new(access_key).unwrap();
         //let client = EventClient::new(client);
         let cal_client = CalendarListClient::new(client.clone());
@@ -305,30 +379,36 @@ impl CalendarAPI {
         println!("Calendars {:?}", calendars);
         if let Some(calendar) = calendars.first() {
             println!("Getting events for {:?}", month);
-            let now = chrono::Local::now();
             let event_client = EventClient::new(client);
             let list = event_client
                 .list(
                     calendar.id.clone(),
-                    CalendarAPI::start_date(&month),
-                    CalendarAPI::end_date(&month),
+                    CalendarAPI::start_date(&year, &month),
+                    CalendarAPI::end_date(&year, &month),
                 )
                 .await
                 .unwrap();
             println!("Events received, {:?}", list);
-            self.sender.send(APIMessage::Events(list));
+            if let Err(e) = self.sender.send(APIMessage::Events(list)) {
+                println!("Error trying to send events message: {}", e);
+            }
         }
     }
 
-    fn start_date(month: &Month) -> DateTime<chrono::Local> {
-        let month_str = format!("2024-{}-01T00:00:00-05:00", month.to_str());
+    fn start_date(year: &String, month: &Month) -> DateTime<chrono::Local> {
+        let month_str = format!("{}-{}-01T00:00:00-05:00", year, month.to_str());
         println!("Month str: {}", month_str.as_str());
         let parsed = DateTime::parse_from_rfc3339(month_str.as_str()).unwrap();
         DateTime::from(parsed)
     }
-    fn end_date(month: &Month) -> DateTime<chrono::Local> {
+    fn end_date(year: &String, month: &Month) -> DateTime<chrono::Local> {
         println!("End date: {}", month.end_day());
-        let month_str = format!("2024-{}-{}T00:00:00-05:00", month.to_str(), month.end_day());
+        let month_str = format!(
+            "{}-{}-{}T00:00:00-05:00",
+            year,
+            month.to_str(),
+            month.end_day()
+        );
         DateTime::from(DateTime::parse_from_rfc3339(month_str.as_str()).unwrap())
     }
 }
