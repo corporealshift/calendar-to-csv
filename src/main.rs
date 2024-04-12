@@ -107,12 +107,8 @@ impl CSVEvent {
         let diff = end.zip(start).map(|(end, start)| end - start);
 
         let start_date = start.map(|dt| format!("{}", dt.format("%Y-%m-%d")));
+        let diff: Option<f64> = diff.map(|diff| diff.num_minutes().to_f64() / 60.0);
 
-        let diff_hours = diff.map(|diff| diff.num_hours());
-        let diff_hour_fraction: Option<f64> = diff.map(|diff| diff.num_minutes().to_f64() / 60.0);
-        let diff = diff_hours
-            .zip(diff_hour_fraction)
-            .map(|(dh, dm)| dh.to_f64() + dm);
         CSVEvent {
             summary: event.summary.clone().unwrap_or("".to_owned()),
             description: event.description.clone().unwrap_or("".to_owned()),
