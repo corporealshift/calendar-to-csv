@@ -86,11 +86,13 @@ fn main() -> Result<(), eframe::Error> {
 
 #[derive(Debug)]
 struct CSVEvent {
-    summary: String,
+    client: String,
+    sub_client: String,
     description: String,
     date: String,
     hours: String,
-    color: String,
+    rate: String,
+    total: String,
 }
 fn parse_date_string(date_string: Option<EventCalendarDate>) -> Option<DateTime<FixedOffset>> {
     date_string
@@ -101,6 +103,15 @@ fn parse_date_string(date_string: Option<EventCalendarDate>) -> Option<DateTime<
 }
 
 impl CSVEvent {
+    fn rate_from_color(color_id: String) -> f64 {
+        match color_id.as_str() {
+            "1" => 50.0,
+            "2" => 40.0,
+            "3" => 36.0,
+            _ => 50.0,
+        }
+    }
+
     fn from_event(event: &Event) -> CSVEvent {
         let end = parse_date_string(event.end.clone());
         let start = parse_date_string(event.start.clone());
@@ -108,13 +119,21 @@ impl CSVEvent {
 
         let start_date = start.map(|dt| format!("{}", dt.format("%Y-%m-%d")));
         let diff: Option<f64> = diff.map(|diff| diff.num_minutes().to_f64() / 60.0);
+        let summary = event.summary.clone().unwrap_or("".to_owned());
+        let summary_parts = summary.split('-');
+        let client: String = summary_parts.clone().nth(0).unwrap_or("").to_owned();
+        let sub_client: String = summary_parts.clone().nth(1).unwrap_or("").to_owned();
+        let rate: f64 = CSVEvent::rate_from_color(event.color_id.clone().unwrap_or("".to_owned()));
+        let total: f64 = diff.map(|d| d * rate).unwrap_or(0.0);
 
         CSVEvent {
-            summary: event.summary.clone().unwrap_or("".to_owned()),
+            client,
+            sub_client,
             description: event.description.clone().unwrap_or("".to_owned()),
             date: start_date.unwrap_or("".to_owned()),
             hours: diff.unwrap_or(0.0).to_string(),
-            color: event.color_id.clone().unwrap_or("".to_owned()),
+            rate: rate.to_string(),
+            total: total.to_string(),
         }
     }
 }
@@ -222,20 +241,24 @@ impl eframe::App for MainScreen {
                                     if let Ok(file) = maybe_file {
                                         let mut wtr = csv::Writer::from_writer(file);
                                         let headers = wtr.write_record(&[
-                                            "Summary",
-                                            "Description",
                                             "Date",
+                                            "Client",
+                                            "Sub Client",
                                             "Num Hours",
-                                            "Color",
+                                            "Job",
+                                            "Rate",
+                                            "Total",
                                         ]);
                                         if let Ok(_) = headers {
                                             self.events.iter().for_each(|event| {
                                                 match wtr.serialize((
-                                                    &event.summary,
-                                                    &event.description,
                                                     &event.date,
+                                                    &event.client,
+                                                    &event.sub_client,
                                                     &event.hours,
-                                                    &event.color,
+                                                    &event.description,
+                                                    &event.rate,
+                                                    &event.total,
                                                 )) {
                                                     Ok(_) => {}
                                                     Err(e) => {
@@ -271,19 +294,22 @@ impl eframe::App for MainScreen {
                         .striped(true)
                         .spacing([4.0, 4.0])
                         .show(ui, |ui| {
-                            ui.label("Summary");
-                            ui.label("Description");
                             ui.label("Date");
+                            ui.label("Client");
+                            ui.label("Clients client");
                             ui.label("Hours");
-                            ui.label("Color");
+                            ui.label("Job");
+                            ui.label("Rate");
+                            ui.label("Total");
                             ui.end_row();
                             self.events.iter().for_each(|event| {
-                                ui.label(&event.summary);
-                                ui.label(&event.description);
                                 ui.label(&event.date);
+                                ui.label(&event.client);
+                                ui.label(&event.sub_client);
                                 ui.label(&event.hours);
-                                ui.label(&event.color);
-
+                                ui.label(&event.description);
+                                ui.label(&event.rate);
+                                ui.label(&event.total);
                                 ui.end_row();
                             });
                         });
